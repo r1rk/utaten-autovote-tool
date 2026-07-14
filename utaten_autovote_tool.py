@@ -126,9 +126,11 @@ async def fetch_session_parameters(session, target_url, custom_ua=None, proxy=No
 
 
 async def worker_task(task_id, target_url, get_end_time_func, config, state, log_on):
-    session = None
     local_loop_count = 0
     current_proxy = None
+    
+    # セッションをループの外で1度だけ生成し、ライフサイクルを保護する
+    session = aiohttp.ClientSession()
 
     try:
         while True:
@@ -141,10 +143,8 @@ async def worker_task(task_id, target_url, get_end_time_func, config, state, log
                     break
 
             if local_loop_count % 10 == 0:
-                if session is not None:
-                    await session.close()
-                
-                session = aiohttp.ClientSession()
+                # セッションの再生成を廃止し、Cookie（状態）のみをクリアする
+                session.cookie_jar.clear()
                 
                 if config["use_proxy"] and PROXY_LIST:
                     current_proxy = random.choice(PROXY_LIST)
@@ -157,8 +157,8 @@ async def worker_task(task_id, target_url, get_end_time_func, config, state, log
                 token, lyric_id, msg = await fetch_session_parameters(session, target_url, current_ua, current_proxy)
                 
                 if not (token and lyric_id):
-                    await session.close()
-                    session = None
+                    # 取得失敗時もセッションは破棄せず、Cookieをクリアしてリトライ
+                    session.cookie_jar.clear()
                     await asyncio.sleep(2.0)
                     continue
 
@@ -223,6 +223,7 @@ async def worker_task(task_id, target_url, get_end_time_func, config, state, log
     except asyncio.CancelledError:
         pass
     finally:
+        # ループやタスクが終了した際に、ここで確実に1度だけセッションを解放する
         if session and not session.closed:
             await session.close()
 
